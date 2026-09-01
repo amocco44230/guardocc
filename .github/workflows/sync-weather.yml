@@ -1,9 +1,20 @@
+# À placer dans votre dépôt sous : .github/workflows/sync-weather.yml
+#
+# Exécute METAR/TAF/SIGMET toutes les 5 minutes, 24h/24, gratuitement, sans
+# serveur à gérer. La flotte OpenSky est gérée par un second workflow séparé
+# (sync-fleet.yml), avec sa propre fenêtre horaire et son propre quota — d'où
+# le --no-fleet ici, pour ne jamais interroger OpenSky deux fois en double.
+# Nécessite deux secrets de dépôt :
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     SUPABASE_URL          = https://xxxx.supabase.co
+#     SUPABASE_SERVICE_KEY  = eyJ... (clé service_role, jamais la clé anon/publique)
+
 name: Sync météo NOAA -> Supabase
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch: {}
+    - cron: "*/5 * * * *"    # toutes les 5 minutes (UTC), 24h/24
+  workflow_dispatch: {}       # bouton "Run workflow" manuel dans l'onglet Actions
 
 jobs:
   sync:
@@ -19,4 +30,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python noaa_sync/sync_weather.py
+        run: python noaa_sync/sync_weather.py --no-fleet
