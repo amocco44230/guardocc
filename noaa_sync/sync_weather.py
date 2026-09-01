@@ -327,6 +327,32 @@ def map_sigmet(s):
 # ============================================================
 # ENVOI SUPABASE (REST / PostgREST) — upsert via en-tête Prefer
 # ============================================================
+def supabase_insert(table, rows):
+    """Insertion simple (pas d'upsert) — pour les tables d'historique qui doivent
+    accumuler une ligne par passage, comme fleet_track_history."""
+    if not rows:
+        return
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("  ! SUPABASE_URL / SUPABASE_SERVICE_KEY non définis — envoi ignoré.", file=sys.stderr)
+        return
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    body = json.dumps(rows).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            print(f"  -> {table}: {len(rows)} ligne(s) ajoutée(s) (HTTP {resp.status})")
+    except urllib.error.HTTPError as e:
+        print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
+
+
 def supabase_upsert(table, rows, on_conflict):
     if not rows:
         print(f"  (rien à envoyer pour {table})")
@@ -379,7 +405,9 @@ def fetch_fleet_positions():
         return []
     rows = []
     for s in data.get("states") or []:
-        icao24, callsign, lon, lat, alt_m, on_ground, track = s[0], s[1], s[5], s[6], s[7], s[8], s[10]
+        icao24, callsign, lon, lat, alt_m, on_ground, velocity, track, vrate, squawk = (
+            s[0], s[1], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[14]
+        )
         if lat is None or lon is None:
             continue
         rows.append({
@@ -390,6 +418,9 @@ def fetch_fleet_positions():
             "altitude_m": alt_m,
             "on_ground": on_ground,
             "true_track": track,
+            "velocity_ms": velocity,
+            "vertical_rate_ms": vrate,
+            "squawk": squawk,
             "fetched_at": RUN_TIME,
         })
     return rows
@@ -443,6 +474,12 @@ def main():
         print(json.dumps(fleet_rows, indent=2, ensure_ascii=False))
     elif fleet_rows:
         supabase_upsert("fleet_positions", fleet_rows, on_conflict="icao24")
+        history_rows = [
+            {"icao24": r["icao24"], "lat": r["lat"], "lng": r["lng"],
+             "altitude_m": r["altitude_m"], "on_ground": r["on_ground"], "fetched_at": r["fetched_at"]}
+            for r in fleet_rows
+        ]
+        supabase_insert("fleet_track_history", history_rows)
 
     print("\nTerminé.")
 
