@@ -32,6 +32,12 @@ import time
 import argparse
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
+
+# Horodatage explicite de CE run, envoyé sur chaque ligne. Indispensable : la colonne
+# "fetched_at default now()" ne s'applique qu'à une INSERTION, jamais à une MISE À JOUR
+# (upsert) — sans ce champ explicite, la date reste figée dès la 2e synchro d'un terrain.
+RUN_TIME = datetime.now(timezone.utc).isoformat()
 
 NOAA_BASE = "https://aviationweather.gov/api/data"
 # NOAA demande un User-Agent explicite pour éviter d'être filtré par erreur
@@ -270,6 +276,7 @@ def map_metar(m):
         "lat": m.get("lat"),
         "lng": m.get("lon"),
         "source": "noaa_awc",
+        "fetched_at": RUN_TIME,
     }
 
 
@@ -284,6 +291,7 @@ def map_taf(t):
         # gardé pour référence/débogage.
         "periods": t.get("fcsts"),
         "source": "noaa_awc",
+        "fetched_at": RUN_TIME,
     }
     # Calculé UNE FOIS ici, à la réception -> stocké tel quel. La carte et le curseur
     # temporel n'ont plus qu'à lire ce tableau (voir expand_hourly() ci-dessus).
@@ -312,6 +320,7 @@ def map_sigmet(s):
         "geometry": s.get("coords") or s.get("area"),
         "source_endpoint": s.get("_source_endpoint"),
         "source": "noaa_awc",
+        "fetched_at": RUN_TIME,
     }
 
 
@@ -393,4 +402,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
