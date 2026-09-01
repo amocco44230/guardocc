@@ -356,6 +356,45 @@ def supabase_upsert(table, rows, on_conflict):
 # ============================================================
 # MAIN
 # ============================================================
+# ============================================================
+# FLOTTE — OpenSky Network (/states/all), côté serveur : le navigateur a rencontré
+# une erreur réseau (probablement CORS non fiable pour cette requête filtrée),
+# donc on récupère ici, comme pour NOAA, et le site ne fait plus que lire Supabase.
+# API anonyme, sans clé : plafond 400 crédits/jour, 1 crédit par appel filtré.
+# ============================================================
+TRACKED_FLEET = {
+    "39856a": "F-HBLK",
+    "398602": "F-HBQC",
+    "39856e": "F-HBLO",
+}
+
+
+def fetch_fleet_positions():
+    params = "&".join(f"icao24={icao24}" for icao24 in TRACKED_FLEET)
+    url = f"https://opensky-network.org/api/states/all?{params}"
+    try:
+        data = http_get_json(url)
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+        print(f"  ! erreur OpenSky : {e}", file=sys.stderr)
+        return []
+    rows = []
+    for s in data.get("states") or []:
+        icao24, callsign, lon, lat, alt_m, on_ground, track = s[0], s[1], s[5], s[6], s[7], s[8], s[10]
+        if lat is None or lon is None:
+            continue
+        rows.append({
+            "icao24": icao24,
+            "registration": TRACKED_FLEET.get(icao24, icao24),
+            "callsign": (callsign or "").strip() or None,
+            "lat": lat, "lng": lon,
+            "altitude_m": alt_m,
+            "on_ground": on_ground,
+            "true_track": track,
+            "fetched_at": RUN_TIME,
+        })
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET NOAA vers Supabase")
     parser.add_argument("--dry-run", action="store_true", help="récupère et affiche, n'envoie rien à Supabase")
@@ -396,6 +435,14 @@ def main():
             print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
         else:
             supabase_upsert("sigmet_data", sigmet_rows, on_conflict="sig_key")
+
+    print("\n[4/4] Flotte suivie (OpenSky)…")
+    fleet_rows = fetch_fleet_positions()
+    print(f"  {len(fleet_rows)} avion(s) suivi(s) actuellement en position")
+    if args.dry_run:
+        print(json.dumps(fleet_rows, indent=2, ensure_ascii=False))
+    elif fleet_rows:
+        supabase_upsert("fleet_positions", fleet_rows, on_conflict="icao24")
 
     print("\nTerminé.")
 
