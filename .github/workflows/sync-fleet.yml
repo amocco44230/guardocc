@@ -1,0 +1,37 @@
+# À placer dans votre dépôt sous : .github/workflows/sync-fleet.yml
+# (à côté de sync-weather.yml, PAS à sa place — les deux fichiers coexistent)
+#
+# Exécute UNIQUEMENT la flotte OpenSky, toutes les 5 minutes, de 04h00 à 23h55
+# UTC (rien la nuit, 00h00-03h55). Séparé de sync-weather.yml pour ne jamais
+# dépendre de son rythme, et pour garder le quota OpenSky (400 crédits/jour en
+# anonyme) sous contrôle indépendamment de la météo.
+#
+# Budget crédits pour cette fenêtre : 20h × 12 passages/h = 240 appels/jour,
+# 1 crédit chacun (requête filtrée par icao24, pas de zone géographique)
+# -> 240 crédits/jour, sous le plafond de 400 avec de la marge.
+#
+# Mêmes secrets que sync-weather.yml (déjà configurés si ce dernier existe) :
+#   SUPABASE_URL, SUPABASE_SERVICE_KEY
+
+name: Sync flotte OpenSky -> Supabase
+
+on:
+  schedule:
+    - cron: "*/5 4-23 * * *"   # toutes les 5 min, 04h00 -> 23h55 UTC, rien 00h-04h
+  workflow_dispatch: {}         # bouton "Run workflow" manuel dans l'onglet Actions
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lancer la synchronisation flotte
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python noaa_sync/sync_weather.py --fleet-only
