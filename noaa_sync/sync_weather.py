@@ -427,72 +427,76 @@ def fetch_fleet_positions():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET NOAA vers Supabase")
+    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET/Flotte NOAA+OpenSky vers Supabase")
     parser.add_argument("--dry-run", action="store_true", help="récupère et affiche, n'envoie rien à Supabase")
     parser.add_argument("--no-sigmet", action="store_true", help="ignore la récupération des SIGMET")
     parser.add_argument("--limit", type=int, default=None, help="ne traiter que les N premiers terrains (tests)")
+    parser.add_argument("--fleet-only", action="store_true", help="ne fait QUE la flotte OpenSky (pour un workflow séparé, fenêtre horaire restreinte)")
+    parser.add_argument("--no-fleet", action="store_true", help="ignore la flotte OpenSky (pour le workflow météo, qui tourne 24h/24)")
     args = parser.parse_args()
 
-    icaos = load_icaos()
-    if args.limit:
-        icaos = icaos[: args.limit]
-    print(f"Terrains suivis : {len(icaos)}")
+    if not args.fleet_only:
+        icaos = load_icaos()
+        if args.limit:
+            icaos = icaos[: args.limit]
+        print(f"Terrains suivis : {len(icaos)}")
 
-    print("\n[1/3] METAR…")
-    metars = fetch_metars(icaos)
-    metar_rows = [map_metar(m) for m in metars]
-    print(f"  {len(metar_rows)} METAR récupérés")
-    if args.dry_run:
-        print(json.dumps(metar_rows[:3], indent=2, ensure_ascii=False))
-    else:
-        supabase_upsert("metar_data", metar_rows, on_conflict="icao_code")
-
-    print("\n[2/3] TAF…")
-    tafs = fetch_tafs(icaos)
-    taf_rows = [map_taf(t) for t in tafs]
-    print(f"  {len(taf_rows)} TAF récupérés")
-    if args.dry_run:
-        print(json.dumps(taf_rows[:2], indent=2, ensure_ascii=False))
-    else:
-        supabase_upsert("taf_data", taf_rows, on_conflict="icao_code")
-
-    if not args.no_sigmet:
-        print("\n[3/3] SIGMET…")
-        sigmets = fetch_sigmets()
-        sigmets_eur = [s for s in sigmets if sigmet_in_area(s)]
-        print(f"  {len(sigmets)} SIGMET actifs dans le monde, {len(sigmets_eur)} dans la zone Europe/réseau")
-        sigmet_rows = [map_sigmet(s) for s in sigmets_eur]
-        # Deux SIGMET distincts peuvent parfois calculer la même sig_key (mêmes fir/heure/
-        # aléa) -> Postgres refuse "ON CONFLICT DO UPDATE" deux fois sur la même ligne dans
-        # un seul envoi. On ne garde que la première occurrence de chaque clé.
-        seen_keys = set()
-        deduped = []
-        for r in sigmet_rows:
-            if r["sig_key"] in seen_keys:
-                continue
-            seen_keys.add(r["sig_key"])
-            deduped.append(r)
-        if len(deduped) < len(sigmet_rows):
-            print(f"  ({len(sigmet_rows) - len(deduped)} doublon(s) de sig_key retiré(s) avant envoi)")
-        sigmet_rows = deduped
+        print("\n[1/3] METAR…")
+        metars = fetch_metars(icaos)
+        metar_rows = [map_metar(m) for m in metars]
+        print(f"  {len(metar_rows)} METAR récupérés")
         if args.dry_run:
-            print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
+            print(json.dumps(metar_rows[:3], indent=2, ensure_ascii=False))
         else:
-            supabase_upsert("sigmet_data", sigmet_rows, on_conflict="sig_key")
+            supabase_upsert("metar_data", metar_rows, on_conflict="icao_code")
 
-    print("\n[4/4] Flotte suivie (OpenSky)…")
-    fleet_rows = fetch_fleet_positions()
-    print(f"  {len(fleet_rows)} avion(s) suivi(s) actuellement en position")
-    if args.dry_run:
-        print(json.dumps(fleet_rows, indent=2, ensure_ascii=False))
-    elif fleet_rows:
-        supabase_upsert("fleet_positions", fleet_rows, on_conflict="icao24")
-        history_rows = [
-            {"icao24": r["icao24"], "lat": r["lat"], "lng": r["lng"],
-             "altitude_m": r["altitude_m"], "on_ground": r["on_ground"], "fetched_at": r["fetched_at"]}
-            for r in fleet_rows
-        ]
-        supabase_insert("fleet_track_history", history_rows)
+        print("\n[2/3] TAF…")
+        tafs = fetch_tafs(icaos)
+        taf_rows = [map_taf(t) for t in tafs]
+        print(f"  {len(taf_rows)} TAF récupérés")
+        if args.dry_run:
+            print(json.dumps(taf_rows[:2], indent=2, ensure_ascii=False))
+        else:
+            supabase_upsert("taf_data", taf_rows, on_conflict="icao_code")
+
+        if not args.no_sigmet:
+            print("\n[3/3] SIGMET…")
+            sigmets = fetch_sigmets()
+            sigmets_eur = [s for s in sigmets if sigmet_in_area(s)]
+            print(f"  {len(sigmets)} SIGMET actifs dans le monde, {len(sigmets_eur)} dans la zone Europe/réseau")
+            sigmet_rows = [map_sigmet(s) for s in sigmets_eur]
+            # Deux SIGMET distincts peuvent parfois calculer la même sig_key (mêmes fir/heure/
+            # aléa) -> Postgres refuse "ON CONFLICT DO UPDATE" deux fois sur la même ligne dans
+            # un seul envoi. On ne garde que la première occurrence de chaque clé.
+            seen_keys = set()
+            deduped = []
+            for r in sigmet_rows:
+                if r["sig_key"] in seen_keys:
+                    continue
+                seen_keys.add(r["sig_key"])
+                deduped.append(r)
+            if len(deduped) < len(sigmet_rows):
+                print(f"  ({len(sigmet_rows) - len(deduped)} doublon(s) de sig_key retiré(s) avant envoi)")
+            sigmet_rows = deduped
+            if args.dry_run:
+                print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
+            else:
+                supabase_upsert("sigmet_data", sigmet_rows, on_conflict="sig_key")
+
+    if not args.no_fleet:
+        print("\nFlotte suivie (OpenSky)…")
+        fleet_rows = fetch_fleet_positions()
+        print(f"  {len(fleet_rows)} avion(s) suivi(s) actuellement en position")
+        if args.dry_run:
+            print(json.dumps(fleet_rows, indent=2, ensure_ascii=False))
+        elif fleet_rows:
+            supabase_upsert("fleet_positions", fleet_rows, on_conflict="icao24")
+            history_rows = [
+                {"icao24": r["icao24"], "lat": r["lat"], "lng": r["lng"],
+                 "altitude_m": r["altitude_m"], "on_ground": r["on_ground"], "fetched_at": r["fetched_at"]}
+                for r in fleet_rows
+            ]
+            supabase_insert("fleet_track_history", history_rows)
 
     print("\nTerminé.")
 
