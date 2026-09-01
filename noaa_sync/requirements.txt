@@ -1,0 +1,3 @@
+# Ce script n'utilise que la bibliothèque standard Python (urllib, json) —
+# aucune dépendance externe nécessaire. Ce fichier est fourni par convention
+# pour que la CI (GitHub Actions) trouve un requirements.txt à installer.
