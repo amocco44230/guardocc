@@ -462,6 +462,19 @@ def main():
         sigmets_eur = [s for s in sigmets if sigmet_in_area(s)]
         print(f"  {len(sigmets)} SIGMET actifs dans le monde, {len(sigmets_eur)} dans la zone Europe/réseau")
         sigmet_rows = [map_sigmet(s) for s in sigmets_eur]
+        # Deux SIGMET distincts peuvent parfois calculer la même sig_key (mêmes fir/heure/
+        # aléa) -> Postgres refuse "ON CONFLICT DO UPDATE" deux fois sur la même ligne dans
+        # un seul envoi. On ne garde que la première occurrence de chaque clé.
+        seen_keys = set()
+        deduped = []
+        for r in sigmet_rows:
+            if r["sig_key"] in seen_keys:
+                continue
+            seen_keys.add(r["sig_key"])
+            deduped.append(r)
+        if len(deduped) < len(sigmet_rows):
+            print(f"  ({len(sigmet_rows) - len(deduped)} doublon(s) de sig_key retiré(s) avant envoi)")
+        sigmet_rows = deduped
         if args.dry_run:
             print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
         else:
