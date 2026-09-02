@@ -4,28 +4,27 @@
 # serveur à gérer. La flotte OpenSky est gérée par un second workflow séparé
 # (sync-fleet.yml), avec sa propre fenêtre horaire et son propre quota — d'où
 # le --no-fleet ici, pour ne jamais interroger OpenSky deux fois en double.
+#
+# Déclenchement : ce workflow n'utilise PAS le cron interne GitHub Actions
+# (peu fiable en pratique). Il est déclenché toutes les 5 minutes via un
+# appel externe workflow_dispatch depuis cron-job.org, ou manuellement
+# via le bouton "Run workflow" dans l'onglet Actions.
+#
 # Nécessite deux secrets de dépôt :
 #   Settings -> Secrets and variables -> Actions -> New repository secret
 #     SUPABASE_URL          = https://xxxx.supabase.co
 #     SUPABASE_SERVICE_KEY  = eyJ... (clé service_role, jamais la clé anon/publique)
-
 name: Sync météo NOAA -> Supabase
-
 on:
-  schedule:
-    - cron: "*/5 * * * *"    # toutes les 5 minutes (UTC), 24h/24
-  workflow_dispatch: {}       # bouton "Run workflow" manuel dans l'onglet Actions
-
+  workflow_dispatch: {}       # déclenché par cron-job.org toutes les 5 min, ou manuellement dans l'onglet Actions
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Lancer la synchronisation
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
