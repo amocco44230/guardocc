@@ -10,26 +10,25 @@
 # 1 crédit chacun (requête filtrée par icao24, pas de zone géographique)
 # -> 240 crédits/jour, sous le plafond de 400 avec de la marge.
 #
+# Déclenchement : ce workflow n'utilise PAS le cron interne GitHub Actions
+# (peu fiable en pratique). Il est déclenché toutes les 5 minutes, entre
+# 04h00 et 23h55 UTC, via un appel externe workflow_dispatch depuis
+# cron-job.org, ou manuellement via le bouton "Run workflow" dans l'onglet
+# Actions. La fenêtre horaire 04h-23h est donc gérée côté cron-job.org.
+#
 # Mêmes secrets que sync-weather.yml (déjà configurés si ce dernier existe) :
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY
-
 name: Sync flotte OpenSky -> Supabase
-
 on:
-  schedule:
-    - cron: "*/5 4-23 * * *"   # toutes les 5 min, 04h00 -> 23h55 UTC, rien 00h-04h
-  workflow_dispatch: {}         # bouton "Run workflow" manuel dans l'onglet Actions
-
+  workflow_dispatch: {}         # déclenché par cron-job.org (04h-23h UTC), ou manuellement dans l'onglet Actions
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Lancer la synchronisation flotte
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
