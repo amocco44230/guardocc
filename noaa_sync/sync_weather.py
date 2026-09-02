@@ -24,6 +24,10 @@ IMPORTANT — à vérifier avant le premier vrai run :
        pour de vrai — l'API NOAA peut faire évoluer ses noms de champs.
     3. Pensez à créer une contrainte UNIQUE sur (icao_code) pour metar_data et
        (icao_code, issue_time) pour taf_data, sinon l'upsert échouera ou dupliquera.
+    4. Champ "issued_at" (heure d'émission réelle du bulletin SIGMET, PAS l'heure de
+       cette synchro) : lit s.get("creationTime") en priorité (airsigmet, US), sinon
+       s.get("receiptTime") (isigmet, international — CONFIRMÉ par --dry-run réel le
+       02/09/2026, c'est le champ effectivement présent sur cet endpoint).
 """
 import os
 import sys
@@ -317,6 +321,13 @@ def map_sigmet(s):
         "fir": fir,
         "valid_from": valid_from,
         "valid_to": s.get("validTimeTo"),
+        # Heure d'ÉMISSION réelle du bulletin par le centre météo (PAS l'heure de cette
+        # synchro, qui est "fetched_at" ci-dessous). CONFIRMÉ par un vrai --dry-run le
+        # 02/09/2026 : l'endpoint isigmet (international, l'essentiel de votre réseau
+        # Europe) utilise "receiptTime", PAS "creationTime" (qui lui reste valable côté
+        # airsigmet, l'endpoint US, d'après la doc d'un client tiers de cette API — non
+        # vérifié directement faute de SIGMET US actif au moment du test).
+        "issued_at": s.get("creationTime") or s.get("receiptTime"),
         "geometry": s.get("coords") or s.get("area"),
         "source_endpoint": s.get("_source_endpoint"),
         "source": "noaa_awc",
