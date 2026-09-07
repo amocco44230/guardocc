@@ -28,6 +28,13 @@ IMPORTANT — à vérifier avant le premier vrai run :
        cette synchro) : lit s.get("creationTime") en priorité (airsigmet, US), sinon
        s.get("receiptTime") (isigmet, international — CONFIRMÉ par --dry-run réel le
        02/09/2026, c'est le champ effectivement présent sur cet endpoint).
+
+CHANGEMENT — liste des terrains désormais lue EN DIRECT depuis Supabase (table routes),
+plus depuis le fichier icaos.json local : ce fichier n'était jamais régénéré
+automatiquement, donc tout terrain ajouté depuis l'application (ex: une nouvelle
+compagnie) n'était en réalité jamais synchronisé. Voir get_icaos()/fetch_icaos_from_supabase()
+ci-dessous. Le fichier icaos.json reste présent uniquement comme filet de secours si
+Supabase est injoignable au moment du run (voir load_icaos()).
 """
 import os
 import sys
@@ -62,14 +69,64 @@ def http_get_json(url):
     return json.loads(body)
 
 
+def http_get_json_supabase(path):
+    """Comme http_get_json, mais avec les en-têtes d'authentification Supabase
+    (apikey + Authorization Bearer service_role)."""
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    req = urllib.request.Request(url, headers={
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read().decode("utf-8")
+    return json.loads(body)
+
+
 def chunked(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
 
+def fetch_icaos_from_supabase():
+    """Union dédupliquée dest/alt1/alt2/alt3 de TOUTES les compagnies NON suspendues,
+    directement depuis la table routes de Supabase — toujours à jour, contrairement à
+    l'ancien fichier icaos.json qui n'était jamais régénéré. Une compagnie suspendue
+    (bouton "⏸ Suspendre" côté Super Admin) voit ses propres terrains exclus tant
+    qu'elle reste dans cet état, sans jamais retirer un terrain encore utilisé par une
+    autre compagnie active — même principe que côté NOTAM."""
+    routes = http_get_json_supabase("routes?select=dest_icao,alt1_icao,alt2_icao,alt3_icao,company_id")
+    paused = http_get_json_supabase("companies?select=id&paused=eq.true")
+    paused_ids = {c["id"] for c in paused}
+    icaos = set()
+    for r in routes:
+        if r.get("company_id") and r["company_id"] in paused_ids:
+            continue
+        for icao in (r.get("dest_icao"), r.get("alt1_icao"), r.get("alt2_icao"), r.get("alt3_icao")):
+            if icao:
+                icaos.add(icao)
+    return sorted(icaos)
+
+
 def load_icaos():
+    """Filet de secours UNIQUEMENT — utilisé si Supabase est injoignable au moment du
+    run. Peut être périmé (ne reflète pas les terrains ajoutés depuis l'application
+    depuis la dernière mise à jour manuelle de ce fichier), donc ne sert qu'à éviter un
+    arrêt total de la synchro en cas de panne réseau/Supabase temporaire."""
     with open(ICAOS_FILE, encoding="utf-8") as f:
         return json.load(f)
+
+
+def get_icaos():
+    try:
+        icaos = fetch_icaos_from_supabase()
+        if icaos:
+            print(f"  (liste des terrains récupérée en direct depuis Supabase : {len(icaos)} terrain(s))")
+            return icaos
+        print("  ! Supabase a renvoyé une liste de terrains vide — repli sur icaos.json local.", file=sys.stderr)
+    except Exception as e:
+        print(f"  ! échec de récupération des terrains depuis Supabase ({e}) — repli sur icaos.json local.", file=sys.stderr)
+    return load_icaos()
 
 
 # ============================================================
@@ -447,7 +504,7 @@ def main():
     args = parser.parse_args()
 
     if not args.fleet_only:
-        icaos = load_icaos()
+        icaos = get_icaos()
         if args.limit:
             icaos = icaos[: args.limit]
         print(f"Terrains suivis : {len(icaos)}")
