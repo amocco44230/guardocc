@@ -15,9 +15,10 @@ USAGE
     python sync_weather.py                # récupère + pousse tout
     python sync_weather.py --dry-run      # récupère et affiche, ne pousse rien
     python sync_weather.py --no-sigmet    # ignore les SIGMET (plus rares)
+    python sync_weather.py --no-airmet    # ignore les AIRMET (couverture USA uniquement)
 
 IMPORTANT — à vérifier avant le premier vrai run :
-    1. Les noms de colonnes ci-dessous (voir map_metar/map_taf/map_sigmet) sont
+    1. Les noms de colonnes ci-dessous (voir map_metar/map_taf/map_sigmet/map_airmet) sont
        calqués sur le schéma qu'on avait posé (database.doc). Si vos tables
        Supabase ont des noms différents, ajustez les dictionnaires "row = {...}".
     2. Lancez d'abord avec --dry-run et vérifiez la sortie JSON avant de pousser
@@ -28,6 +29,11 @@ IMPORTANT — à vérifier avant le premier vrai run :
        cette synchro) : lit s.get("creationTime") en priorité (airsigmet, US), sinon
        s.get("receiptTime") (isigmet, international — CONFIRMÉ par --dry-run réel le
        02/09/2026, c'est le champ effectivement présent sur cet endpoint).
+    5. AIRMET (G-AIRMET NOAA/AWC) : COUVERTURE USA UNIQUEMENT. Pas d'équivalent
+       international consolidé et gratuit à ce jour (les AIRMET hors USA sont émis FIR
+       par FIR, sans flux public agrégé connu). Reste normalement vide/quasi vide pour
+       un réseau purement européen — c'est attendu, pas un bug. Nécessite la table
+       airmet_data (voir 24_airmet_volcanic_ash.sql).
 
 CHANGEMENT — liste des terrains désormais lue EN DIRECT depuis Supabase (table routes),
 plus depuis le fichier icaos.json local : ce fichier n'était jamais régénéré
@@ -177,6 +183,19 @@ def fetch_sigmets():
             print(f"  ! erreur {endpoint} : {e}", file=sys.stderr)
         time.sleep(0.5)
     return out
+
+
+def fetch_airmets():
+    """G-AIRMET NOAA/AWC — COUVERTURE USA UNIQUEMENT. Pas d'endpoint international
+    consolidé équivalent à isigmet pour l'AIRMET à ce jour (les AIRMET hors USA sont émis
+    FIR par FIR, sans flux public agrégé connu et gratuit). Reste normalement vide/quasi
+    vide pour un réseau purement européen — c'est attendu, pas un bug."""
+    url = f"{NOAA_BASE}/airmet?format=json"
+    try:
+        return http_get_json(url)
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+        print(f"  ! erreur airmet : {e}", file=sys.stderr)
+        return []
 
 
 # Zone large autour de l'Europe (lat, lon) — à ajuster si votre réseau s'étend ailleurs.
@@ -392,6 +411,25 @@ def map_sigmet(s):
     }
 
 
+def map_airmet(a):
+    raw_text = a.get("rawAirmet") or a.get("rawText") or a.get("raw")
+    fir = a.get("firId") or a.get("icaoId") or "K"  # G-AIRMET US n'a pas toujours de FIR explicite
+    valid_from = a.get("validTimeFrom")
+    hazard = a.get("hazard")
+    return {
+        "air_key": f"{fir}_{valid_from}_{hazard}",
+        "raw_airmet": raw_text,
+        "raw_json": a,
+        "hazard": hazard,
+        "fir": fir,
+        "valid_from": valid_from,
+        "valid_to": a.get("validTimeTo"),
+        "geometry": a.get("coords") or a.get("area"),
+        "source": "noaa_awc",
+        "fetched_at": RUN_TIME,
+    }
+
+
 # ============================================================
 # ENVOI SUPABASE (REST / PostgREST) — upsert via en-tête Prefer
 # ============================================================
@@ -495,9 +533,10 @@ def fetch_fleet_positions():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET/Flotte NOAA+OpenSky vers Supabase")
+    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET/AIRMET/Flotte NOAA+OpenSky vers Supabase")
     parser.add_argument("--dry-run", action="store_true", help="récupère et affiche, n'envoie rien à Supabase")
     parser.add_argument("--no-sigmet", action="store_true", help="ignore la récupération des SIGMET")
+    parser.add_argument("--no-airmet", action="store_true", help="ignore la récupération des AIRMET (couverture USA uniquement)")
     parser.add_argument("--limit", type=int, default=None, help="ne traiter que les N premiers terrains (tests)")
     parser.add_argument("--fleet-only", action="store_true", help="ne fait QUE la flotte OpenSky (pour un workflow séparé, fenêtre horaire restreinte)")
     parser.add_argument("--no-fleet", action="store_true", help="ignore la flotte OpenSky (pour le workflow météo, qui tourne 24h/24)")
@@ -509,7 +548,7 @@ def main():
             icaos = icaos[: args.limit]
         print(f"Terrains suivis : {len(icaos)}")
 
-        print("\n[1/3] METAR…")
+        print("\n[1/4] METAR…")
         metars = fetch_metars(icaos)
         metar_rows = [map_metar(m) for m in metars]
         print(f"  {len(metar_rows)} METAR récupérés")
@@ -518,7 +557,7 @@ def main():
         else:
             supabase_upsert("metar_data", metar_rows, on_conflict="icao_code")
 
-        print("\n[2/3] TAF…")
+        print("\n[2/4] TAF…")
         tafs = fetch_tafs(icaos)
         taf_rows = [map_taf(t) for t in tafs]
         print(f"  {len(taf_rows)} TAF récupérés")
@@ -528,7 +567,7 @@ def main():
             supabase_upsert("taf_data", taf_rows, on_conflict="icao_code")
 
         if not args.no_sigmet:
-            print("\n[3/3] SIGMET…")
+            print("\n[3/4] SIGMET…")
             sigmets = fetch_sigmets()
             sigmets_eur = [s for s in sigmets if sigmet_in_area(s)]
             print(f"  {len(sigmets)} SIGMET actifs dans le monde, {len(sigmets_eur)} dans la zone Europe/réseau")
@@ -550,6 +589,26 @@ def main():
                 print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
             else:
                 supabase_upsert("sigmet_data", sigmet_rows, on_conflict="sig_key")
+
+        if not args.no_airmet:
+            print("\n[4/4] AIRMET (couverture USA uniquement)…")
+            airmets = fetch_airmets()
+            print(f"  {len(airmets)} AIRMET actifs (G-AIRMET, USA)")
+            airmet_rows = [map_airmet(a) for a in airmets]
+            seen_air_keys = set()
+            deduped_airmets = []
+            for r in airmet_rows:
+                if r["air_key"] in seen_air_keys:
+                    continue
+                seen_air_keys.add(r["air_key"])
+                deduped_airmets.append(r)
+            if len(deduped_airmets) < len(airmet_rows):
+                print(f"  ({len(airmet_rows) - len(deduped_airmets)} doublon(s) de air_key retiré(s) avant envoi)")
+            airmet_rows = deduped_airmets
+            if args.dry_run:
+                print(json.dumps(airmet_rows[:3], indent=2, ensure_ascii=False))
+            else:
+                supabase_upsert("airmet_data", airmet_rows, on_conflict="air_key")
 
     if not args.no_fleet:
         print("\nFlotte suivie (OpenSky)…")
