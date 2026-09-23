@@ -207,6 +207,10 @@ def supabase_upsert(table, rows, on_conflict):
             print(f"  -> {table}: {len(rows)} ligne(s) envoyée(s) (HTTP {resp.status})")
     except urllib.error.HTTPError as e:
         print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # Même correctif que sync_weather.py (voir son commentaire) -- un simple délai
+        # réseau dépassé ne doit jamais faire planter tout le script.
+        print(f"  ! délai réseau dépassé sur {table} ({e}) — ce lot sera retenté au prochain run.", file=sys.stderr)
 
 
 def main():
