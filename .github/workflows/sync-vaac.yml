@@ -1,0 +1,26 @@
+# À placer dans votre dépôt sous : .github/workflows/sync-vaac.yml
+#
+# Récupère l'alerte VAAC Toulouse (Etna) toutes les 5 minutes, gratuitement (dépôt
+# public). Même mécanique que sync-weather.yml : déclenché par un appel externe
+# workflow_dispatch depuis cron-job.org, pas le cron interne GitHub (peu fiable).
+#
+# Nécessite les MÊMES secrets que sync-weather.yml (déjà en place si vous avez
+# suivi ce même dépôt) :
+#     SUPABASE_URL
+#     SUPABASE_SERVICE_KEY
+name: Sync VAAC (volcans) -> Supabase
+on:
+  workflow_dispatch: {}       # déclenché par cron-job.org toutes les 5 min, ou manuellement dans l'onglet Actions
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lancer la synchronisation VAAC
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python noaa_sync/sync_vaac.py
