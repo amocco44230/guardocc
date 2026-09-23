@@ -114,6 +114,29 @@ def parse_psn(psn_str):
     return round(lat, 4), round(lon, 4)
 
 
+def parse_cloud_polygon(text):
+    """Extrait un polygone [[lat,lon], ...] depuis un texte type 'SFC/FL180 N3745
+    E01500 - N3738 E01521 - ... MOV SE 10KT'. Renvoie None si aucune paire de
+    coordonnées trouvée (cas normal quand le texte dit "NO VA EXP" -- pas de nuage)."""
+    if not text:
+        return None
+    pairs = re.findall(r"([NS]\d{2,4})\s+([EW]\d{3,5})", text)
+    if len(pairs) < 3:  # un polygone a besoin d'au moins 3 sommets
+        return None
+    coords = []
+    for ns_str, ew_str in pairs:
+        ns, ew = ns_str[0], ew_str[0]
+        lat_digits, lon_digits = ns_str[1:], ew_str[1:]
+        lat = int(lat_digits[:2]) + int(lat_digits[2:4] or 0) / 60
+        lon = int(lon_digits[:3]) + int(lon_digits[3:5] or 0) / 60
+        if ns == "S":
+            lat = -lat
+        if ew == "W":
+            lon = -lon
+        coords.append([round(lat, 4), round(lon, 4)])
+    return coords
+
+
 def fetch_advisory(volcano_name, cfg):
     url = find_latest_advisory_url(cfg["slug"])
     html = http_get_text(url)
@@ -145,6 +168,12 @@ def fetch_advisory(volcano_name, cfg):
         "fcst_6h": fields.get("fcst_6h"),
         "fcst_12h": fields.get("fcst_12h"),
         "fcst_18h": fields.get("fcst_18h"),
+        # Polygones du nuage de cendres, un par échéance -- None si "NO VA EXP" (pas
+        # de nuage à cette échéance, cas normal la plupart du temps).
+        "obs_va_cld_geom": parse_cloud_polygon(fields.get("obs_va_cld")),
+        "fcst_6h_geom": parse_cloud_polygon(fields.get("fcst_6h")),
+        "fcst_12h_geom": parse_cloud_polygon(fields.get("fcst_12h")),
+        "fcst_18h_geom": parse_cloud_polygon(fields.get("fcst_18h")),
         "remark": fields.get("remark"),
         "next_advisory": fields.get("next_advisory"),
         "raw_text": block.strip(),
