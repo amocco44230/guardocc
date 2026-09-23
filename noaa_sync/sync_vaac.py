@@ -56,12 +56,20 @@ def http_get_text(url):
 
 def find_latest_advisory_url(volcano_slug):
     """Page /volcanoes/<slug>/ : liste des avis, le plus récent est le premier lien
-    de la forme /advisory/AAAA/XXXXXX_YYYYMMDDHHMMSS/XXXXXX_YYYYMMDDHHMMSS/."""
+    de la forme /advisory/AAAA/XXXXXX_YYYYMMDDHHMMSS/XXXXXX_YYYYMMDDHHMMSS/.
+
+    Motif volontairement souple (pas d'ancrage sur href="..." précis) : cherche le
+    chemin /advisory/... n'importe où dans le HTML, qu'il soit en URL relative ou
+    absolue, entre guillemets simples ou doubles -- plus robuste si Météo-France
+    modifie légèrement la structure de ses balises un jour."""
     html = http_get_text(f"{VAAC_BASE}/volcanoes/{volcano_slug}/")
-    m = re.search(r'href="(/advisory/\d{4}/\d+_\d+/\d+_\d+/)"', html)
-    if not m:
-        raise RuntimeError(f"aucun avis trouvé sur la page /volcanoes/{volcano_slug}/")
-    return VAAC_BASE + m.group(1)
+    matches = re.findall(r"/advisory/\d{4}/\d+_\d+/\d+_\d+/", html)
+    if not matches:
+        raise RuntimeError(
+            f"aucun avis trouvé sur la page /volcanoes/{volcano_slug}/ "
+            f"(page récupérée : {len(html)} caractères, début : {html[:200]!r})"
+        )
+    return VAAC_BASE + matches[0]
 
 
 # Champs du bloc texte fixe "VA ADVISORY ... NXT ADVISORY: ...=". On capture chaque
