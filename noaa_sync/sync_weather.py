@@ -15,10 +15,9 @@ USAGE
     python sync_weather.py                # récupère + pousse tout
     python sync_weather.py --dry-run      # récupère et affiche, ne pousse rien
     python sync_weather.py --no-sigmet    # ignore les SIGMET (plus rares)
-    python sync_weather.py --no-airmet    # ignore les AIRMET (couverture USA uniquement)
 
 IMPORTANT — à vérifier avant le premier vrai run :
-    1. Les noms de colonnes ci-dessous (voir map_metar/map_taf/map_sigmet/map_airmet) sont
+    1. Les noms de colonnes ci-dessous (voir map_metar/map_taf/map_sigmet) sont
        calqués sur le schéma qu'on avait posé (database.doc). Si vos tables
        Supabase ont des noms différents, ajustez les dictionnaires "row = {...}".
     2. Lancez d'abord avec --dry-run et vérifiez la sortie JSON avant de pousser
@@ -29,18 +28,6 @@ IMPORTANT — à vérifier avant le premier vrai run :
        cette synchro) : lit s.get("creationTime") en priorité (airsigmet, US), sinon
        s.get("receiptTime") (isigmet, international — CONFIRMÉ par --dry-run réel le
        02/09/2026, c'est le champ effectivement présent sur cet endpoint).
-    5. AIRMET (G-AIRMET NOAA/AWC) : COUVERTURE USA UNIQUEMENT. Pas d'équivalent
-       international consolidé et gratuit à ce jour (les AIRMET hors USA sont émis FIR
-       par FIR, sans flux public agrégé connu). Reste normalement vide/quasi vide pour
-       un réseau purement européen — c'est attendu, pas un bug. Nécessite la table
-       airmet_data (voir 24_airmet_volcanic_ash.sql).
-
-CHANGEMENT — liste des terrains désormais lue EN DIRECT depuis Supabase (table routes),
-plus depuis le fichier icaos.json local : ce fichier n'était jamais régénéré
-automatiquement, donc tout terrain ajouté depuis l'application (ex: une nouvelle
-compagnie) n'était en réalité jamais synchronisé. Voir get_icaos()/fetch_icaos_from_supabase()
-ci-dessous. Le fichier icaos.json reste présent uniquement comme filet de secours si
-Supabase est injoignable au moment du run (voir load_icaos()).
 """
 import os
 import sys
@@ -75,64 +62,14 @@ def http_get_json(url):
     return json.loads(body)
 
 
-def http_get_json_supabase(path):
-    """Comme http_get_json, mais avec les en-têtes d'authentification Supabase
-    (apikey + Authorization Bearer service_role)."""
-    url = f"{SUPABASE_URL}/rest/v1/{path}"
-    req = urllib.request.Request(url, headers={
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Accept": "application/json",
-    })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = resp.read().decode("utf-8")
-    return json.loads(body)
-
-
 def chunked(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i + size]
 
 
-def fetch_icaos_from_supabase():
-    """Union dédupliquée dest/alt1/alt2/alt3 de TOUTES les compagnies NON suspendues,
-    directement depuis la table routes de Supabase — toujours à jour, contrairement à
-    l'ancien fichier icaos.json qui n'était jamais régénéré. Une compagnie suspendue
-    (bouton "⏸ Suspendre" côté Super Admin) voit ses propres terrains exclus tant
-    qu'elle reste dans cet état, sans jamais retirer un terrain encore utilisé par une
-    autre compagnie active — même principe que côté NOTAM."""
-    routes = http_get_json_supabase("routes?select=dest_icao,alt1_icao,alt2_icao,alt3_icao,company_id")
-    paused = http_get_json_supabase("companies?select=id&paused=eq.true")
-    paused_ids = {c["id"] for c in paused}
-    icaos = set()
-    for r in routes:
-        if r.get("company_id") and r["company_id"] in paused_ids:
-            continue
-        for icao in (r.get("dest_icao"), r.get("alt1_icao"), r.get("alt2_icao"), r.get("alt3_icao")):
-            if icao:
-                icaos.add(icao)
-    return sorted(icaos)
-
-
 def load_icaos():
-    """Filet de secours UNIQUEMENT — utilisé si Supabase est injoignable au moment du
-    run. Peut être périmé (ne reflète pas les terrains ajoutés depuis l'application
-    depuis la dernière mise à jour manuelle de ce fichier), donc ne sert qu'à éviter un
-    arrêt total de la synchro en cas de panne réseau/Supabase temporaire."""
     with open(ICAOS_FILE, encoding="utf-8") as f:
         return json.load(f)
-
-
-def get_icaos():
-    try:
-        icaos = fetch_icaos_from_supabase()
-        if icaos:
-            print(f"  (liste des terrains récupérée en direct depuis Supabase : {len(icaos)} terrain(s))")
-            return icaos
-        print("  ! Supabase a renvoyé une liste de terrains vide — repli sur icaos.json local.", file=sys.stderr)
-    except Exception as e:
-        print(f"  ! échec de récupération des terrains depuis Supabase ({e}) — repli sur icaos.json local.", file=sys.stderr)
-    return load_icaos()
 
 
 # ============================================================
@@ -183,19 +120,6 @@ def fetch_sigmets():
             print(f"  ! erreur {endpoint} : {e}", file=sys.stderr)
         time.sleep(0.5)
     return out
-
-
-def fetch_airmets():
-    """G-AIRMET NOAA/AWC — COUVERTURE USA UNIQUEMENT. Pas d'endpoint international
-    consolidé équivalent à isigmet pour l'AIRMET à ce jour (les AIRMET hors USA sont émis
-    FIR par FIR, sans flux public agrégé connu et gratuit). Reste normalement vide/quasi
-    vide pour un réseau purement européen — c'est attendu, pas un bug."""
-    url = f"{NOAA_BASE}/airmet?format=json"
-    try:
-        return http_get_json(url)
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
-        print(f"  ! erreur airmet : {e}", file=sys.stderr)
-        return []
 
 
 # Zone large autour de l'Europe (lat, lon) — à ajuster si votre réseau s'étend ailleurs.
@@ -411,25 +335,6 @@ def map_sigmet(s):
     }
 
 
-def map_airmet(a):
-    raw_text = a.get("rawAirmet") or a.get("rawText") or a.get("raw")
-    fir = a.get("firId") or a.get("icaoId") or "K"  # G-AIRMET US n'a pas toujours de FIR explicite
-    valid_from = a.get("validTimeFrom")
-    hazard = a.get("hazard")
-    return {
-        "air_key": f"{fir}_{valid_from}_{hazard}",
-        "raw_airmet": raw_text,
-        "raw_json": a,
-        "hazard": hazard,
-        "fir": fir,
-        "valid_from": valid_from,
-        "valid_to": a.get("validTimeTo"),
-        "geometry": a.get("coords") or a.get("area"),
-        "source": "noaa_awc",
-        "fetched_at": RUN_TIME,
-    }
-
-
 # ============================================================
 # ENVOI SUPABASE (REST / PostgREST) — upsert via en-tête Prefer
 # ============================================================
@@ -457,6 +362,13 @@ def supabase_insert(table, rows):
             print(f"  -> {table}: {len(rows)} ligne(s) ajoutée(s) (HTTP {resp.status})")
     except urllib.error.HTTPError as e:
         print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # Panne réseau / délai dépassé (pas une erreur HTTP à proprement parler -- aucune
+        # réponse n'a même été reçue). Sans ce filet, une seule table en délai d'attente
+        # plantait TOUT le script (exception non rattrapée), empêchant les tables SUIVANTES
+        # de se mettre à jour ce run-ci -- vu en vrai le 23/09/2026 (AIRMET en timeout a
+        # bloqué le reste, alors que METAR/TAF/SIGMET avaient déjà réussi juste avant).
+        print(f"  ! délai réseau dépassé sur {table} ({e}) — ce lot sera retenté au prochain run.", file=sys.stderr)
 
 
 def supabase_upsert(table, rows, on_conflict):
@@ -483,6 +395,11 @@ def supabase_upsert(table, rows, on_conflict):
             print(f"  -> {table}: {len(rows)} ligne(s) envoyée(s) (HTTP {resp.status})")
     except urllib.error.HTTPError as e:
         print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        # Même filet que supabase_insert ci-dessus -- voir le commentaire là-bas pour le
+        # run réel du 23/09/2026 qui a révélé ce bug (AIRMET en timeout bloquait tout le
+        # reste du script, exit code 1, alors que les autres tables étaient déjà envoyées).
+        print(f"  ! délai réseau dépassé sur {table} ({e}) — ce lot sera retenté au prochain run.", file=sys.stderr)
 
 
 # ============================================================
@@ -533,22 +450,21 @@ def fetch_fleet_positions():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET/AIRMET/Flotte NOAA+OpenSky vers Supabase")
+    parser = argparse.ArgumentParser(description="Synchronise METAR/TAF/SIGMET/Flotte NOAA+OpenSky vers Supabase")
     parser.add_argument("--dry-run", action="store_true", help="récupère et affiche, n'envoie rien à Supabase")
     parser.add_argument("--no-sigmet", action="store_true", help="ignore la récupération des SIGMET")
-    parser.add_argument("--no-airmet", action="store_true", help="ignore la récupération des AIRMET (couverture USA uniquement)")
     parser.add_argument("--limit", type=int, default=None, help="ne traiter que les N premiers terrains (tests)")
     parser.add_argument("--fleet-only", action="store_true", help="ne fait QUE la flotte OpenSky (pour un workflow séparé, fenêtre horaire restreinte)")
     parser.add_argument("--no-fleet", action="store_true", help="ignore la flotte OpenSky (pour le workflow météo, qui tourne 24h/24)")
     args = parser.parse_args()
 
     if not args.fleet_only:
-        icaos = get_icaos()
+        icaos = load_icaos()
         if args.limit:
             icaos = icaos[: args.limit]
         print(f"Terrains suivis : {len(icaos)}")
 
-        print("\n[1/4] METAR…")
+        print("\n[1/3] METAR…")
         metars = fetch_metars(icaos)
         metar_rows = [map_metar(m) for m in metars]
         print(f"  {len(metar_rows)} METAR récupérés")
@@ -557,7 +473,7 @@ def main():
         else:
             supabase_upsert("metar_data", metar_rows, on_conflict="icao_code")
 
-        print("\n[2/4] TAF…")
+        print("\n[2/3] TAF…")
         tafs = fetch_tafs(icaos)
         taf_rows = [map_taf(t) for t in tafs]
         print(f"  {len(taf_rows)} TAF récupérés")
@@ -567,7 +483,7 @@ def main():
             supabase_upsert("taf_data", taf_rows, on_conflict="icao_code")
 
         if not args.no_sigmet:
-            print("\n[3/4] SIGMET…")
+            print("\n[3/3] SIGMET…")
             sigmets = fetch_sigmets()
             sigmets_eur = [s for s in sigmets if sigmet_in_area(s)]
             print(f"  {len(sigmets)} SIGMET actifs dans le monde, {len(sigmets_eur)} dans la zone Europe/réseau")
@@ -589,26 +505,6 @@ def main():
                 print(json.dumps(sigmet_rows[:3], indent=2, ensure_ascii=False))
             else:
                 supabase_upsert("sigmet_data", sigmet_rows, on_conflict="sig_key")
-
-        if not args.no_airmet:
-            print("\n[4/4] AIRMET (couverture USA uniquement)…")
-            airmets = fetch_airmets()
-            print(f"  {len(airmets)} AIRMET actifs (G-AIRMET, USA)")
-            airmet_rows = [map_airmet(a) for a in airmets]
-            seen_air_keys = set()
-            deduped_airmets = []
-            for r in airmet_rows:
-                if r["air_key"] in seen_air_keys:
-                    continue
-                seen_air_keys.add(r["air_key"])
-                deduped_airmets.append(r)
-            if len(deduped_airmets) < len(airmet_rows):
-                print(f"  ({len(airmet_rows) - len(deduped_airmets)} doublon(s) de air_key retiré(s) avant envoi)")
-            airmet_rows = deduped_airmets
-            if args.dry_run:
-                print(json.dumps(airmet_rows[:3], indent=2, ensure_ascii=False))
-            else:
-                supabase_upsert("airmet_data", airmet_rows, on_conflict="air_key")
 
     if not args.no_fleet:
         print("\nFlotte suivie (OpenSky)…")
