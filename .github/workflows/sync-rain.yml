@@ -1,0 +1,30 @@
+# À placer dans votre dépôt sous : .github/workflows/sync-rain.yml
+#
+# Récupère la couche pluie GFS (Europe, 4 échéances) plusieurs fois par jour --
+# pas besoin de toutes les 5 minutes comme la météo, GFS ne se met à jour que 4x/jour.
+# Un déclenchement cron-job.org toutes les heures suffit largement (le script se
+# débrouille tout seul pour ne prendre que le dernier run réellement disponible).
+#
+# Nécessite les MÊMES secrets que sync-weather.yml :
+#     SUPABASE_URL
+#     SUPABASE_SERVICE_KEY
+name: Sync pluie GFS -> Supabase
+on:
+  workflow_dispatch: {}
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer eccodes (lecture GRIB2)
+        run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
+      - name: Installer les dépendances Python
+        run: pip install cfgrib xarray matplotlib numpy --break-system-packages
+      - name: Lancer la synchronisation pluie
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python noaa_sync/sync_rain.py
