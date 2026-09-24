@@ -105,20 +105,30 @@ def grib_to_png_base64(grib_path):
     speed_ms = np.sqrt(u ** 2 + v ** 2)
     speed_kt = speed_ms * 1.94384  # m/s -> nœuds, convention aéronautique
 
-    # Palette façon carte aéro : transparent sous 5kt, puis vert -> jaune -> orange ->
-    # rouge jusqu'à 50kt+ (saturé au-delà), cohérent avec les seuils d'alerte vent déjà
-    # utilisés ailleurs dans l'appli.
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "wind", ["#2fbf7100", "#2fbf71", "#e8a13c", "#e0483e", "#8b1a1a"]
-    )
-    norm = mcolors.Normalize(vmin=0, vmax=50)
-    rgba = cmap(norm(np.clip(speed_kt, 0, 50)))
-    rgba[speed_kt < 5, 3] = 0  # transparent sous 5kt (brise négligeable)
+    # Palette par PALIERS (bandes nettes, pas un dégradé continu) -- façon carte
+    # meteociel de référence : blanc/transparent sous 10kt, puis bandes bleu -> vert ->
+    # jaune -> orange -> rouge tous les ~10kt. Modifiable ici si besoin (LEVELS_KT).
+    LEVELS_KT = [0, 10, 20, 30, 40, 50, 60, 200]  # 8 bornes -> 7 intervalles, 7 couleurs
+    COLORS = ["#ffffff00", "#a7d8f0", "#5fb8e0", "#2fbf71", "#e8d33c", "#e8a13c", "#e0483e"]
 
     fig = plt.figure(figsize=(speed_kt.shape[1] / 100, speed_kt.shape[0] / 100), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
-    ax.imshow(rgba, origin="upper" if lats[0] > lats[-1] else "lower", extent=[lons.min(), lons.max(), lats.min(), lats.max()])
+    ax.set_xlim(lons.min(), lons.max())
+    ax.set_ylim(lats.min(), lats.max()) if lats[0] < lats[-1] else ax.set_ylim(lats.max(), lats.min())
+
+    lon2d, lat2d = np.meshgrid(lons, lats)
+    ax.contourf(lon2d, lat2d, speed_kt, levels=LEVELS_KT, colors=COLORS)
+
+    # Flèches de direction -- sous-échantillonnées (une pointe tous les ~8 points de
+    # grille, sinon totalement illisible à 0.25° de résolution sur toute l'Europe).
+    step = 8
+    ax.quiver(
+        lon2d[::step, ::step], lat2d[::step, ::step],
+        u[::step, ::step], v[::step, ::step],
+        color="#1a1a1a", scale=700, width=0.0022, headwidth=3.5, alpha=0.85,
+    )
+
     buf = io.BytesIO()
     plt.savefig(buf, format="png", transparent=True)
     plt.close(fig)
