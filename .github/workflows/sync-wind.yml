@@ -1,0 +1,28 @@
+# À placer dans votre dépôt sous : .github/workflows/sync-wind.yml
+#
+# Récupère la couche vent GFS (Europe, 4 échéances) -- remplace l'ancienne couche
+# OpenWeatherMap. Même cadence que la pluie : 1x/heure suffit largement.
+#
+# Nécessite les MÊMES secrets que les autres workflows :
+#     SUPABASE_URL
+#     SUPABASE_SERVICE_KEY
+name: Sync vent GFS -> Supabase
+on:
+  workflow_dispatch: {}
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installer eccodes (lecture GRIB2)
+        run: sudo apt-get update && sudo apt-get install -y libeccodes-dev
+      - name: Installer les dépendances Python
+        run: pip install cfgrib xarray matplotlib numpy --break-system-packages
+      - name: Lancer la synchronisation vent
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python noaa_sync/sync_wind.py
