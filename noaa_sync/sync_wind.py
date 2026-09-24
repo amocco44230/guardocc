@@ -90,7 +90,6 @@ def grib_to_png_base64(grib_path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.patheffects as pe
     from PIL import Image
 
     # U et V à 10m sont dans le même fichier -- cfgrib les sépare en 2 datasets distincts
@@ -112,7 +111,7 @@ def grib_to_png_base64(grib_path):
     LEVELS_KT = [0, 10, 20, 30, 40, 50, 60, 200]  # 8 bornes -> 7 intervalles, 7 couleurs
     COLORS = ["#ffffff00", "#a7d8f0", "#5fb8e0", "#2fbf71", "#e8d33c", "#e8a13c", "#e0483e"]
 
-    fig = plt.figure(figsize=(speed_kt.shape[1] / 100, speed_kt.shape[0] / 100), dpi=100)
+    fig = plt.figure(figsize=(speed_kt.shape[1] / 100, speed_kt.shape[0] / 100), dpi=400)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.axis("off")
     ax.set_xlim(lons.min(), lons.max())
@@ -121,16 +120,14 @@ def grib_to_png_base64(grib_path):
     lon2d, lat2d = np.meshgrid(lons, lats)
     ax.contourf(lon2d, lat2d, speed_kt, levels=LEVELS_KT, colors=COLORS)
 
-    # Flèches de direction -- beaucoup moins denses qu'avant (une pointe tous les ~16
-    # points de grille) et nettement plus grandes/contrastées (liseré blanc autour du
-    # trait noir) pour rester lisibles même sur un fond de carte chargé.
+    # Flèches de direction -- nettes, sans liseré blanc (contour trop "flou" à l'usage) --
+    # juste un trait noir plein et fin, comme la carte de référence.
     step = 16
-    q = ax.quiver(
+    ax.quiver(
         lon2d[::step, ::step], lat2d[::step, ::step],
         u[::step, ::step], v[::step, ::step],
-        color="#1a1a1a", scale=280, width=0.0055, headwidth=3.2, headlength=4, alpha=0.95,
+        color="#111111", scale=280, width=0.0032, headwidth=4, headlength=4.5, alpha=1.0,
     )
-    q.set_path_effects([pe.Stroke(linewidth=2.2, foreground="white"), pe.Normal()])
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", transparent=True)
