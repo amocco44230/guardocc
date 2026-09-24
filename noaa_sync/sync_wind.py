@@ -84,13 +84,14 @@ def download_grib(url, dest_path):
 def grib_to_png_base64(grib_path):
     """Lit le GRIB2 (via cfgrib/eccodes), calcule la vitesse du vent (magnitude des
     composantes U/V, converties en nœuds), rend une image PNG transparente sous un
-    seuil bas, renvoie (base64_png, bounds)."""
+    seuil bas avec des flèches de direction, renvoie (base64_png, bounds)."""
     import xarray as xr
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
+    import matplotlib.patheffects as pe
+    from PIL import Image
 
     # U et V à 10m sont dans le même fichier -- cfgrib les sépare en 2 datasets distincts
     # via filter_by_keys plutôt que de les mélanger dans un seul open_dataset (plus fiable
@@ -120,20 +121,44 @@ def grib_to_png_base64(grib_path):
     lon2d, lat2d = np.meshgrid(lons, lats)
     ax.contourf(lon2d, lat2d, speed_kt, levels=LEVELS_KT, colors=COLORS)
 
-    # Flèches de direction -- sous-échantillonnées (une pointe tous les ~8 points de
-    # grille, sinon totalement illisible à 0.25° de résolution sur toute l'Europe).
-    step = 8
-    ax.quiver(
+    # Flèches de direction -- beaucoup moins denses qu'avant (une pointe tous les ~16
+    # points de grille) et nettement plus grandes/contrastées (liseré blanc autour du
+    # trait noir) pour rester lisibles même sur un fond de carte chargé.
+    step = 16
+    q = ax.quiver(
         lon2d[::step, ::step], lat2d[::step, ::step],
         u[::step, ::step], v[::step, ::step],
-        color="#1a1a1a", scale=700, width=0.0022, headwidth=3.5, alpha=0.85,
+        color="#1a1a1a", scale=280, width=0.0055, headwidth=3.2, headlength=4, alpha=0.95,
     )
+    q.set_path_effects([pe.Stroke(linewidth=2.2, foreground="white"), pe.Normal()])
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", transparent=True)
     plt.close(fig)
     buf.seek(0)
-    b64 = base64.b64encode(buf.read()).decode("ascii")
+
+    # Fondu sur les bords -- sans ça, le rectangle Europe se voit nettement en bord de
+    # carte (arête franche). On estompe l'opacité sur les ~8% extérieurs de l'image
+    # plutôt que de la couper net.
+    img = Image.open(buf).convert("RGBA")
+    w, h = img.size
+    alpha = np.array(img.getchannel("A"), dtype=np.float32)
+    margin_x, margin_y = int(w * 0.08), int(h * 0.08)
+    fade = np.ones((h, w), dtype=np.float32)
+    for i in range(margin_x):
+        f = i / margin_x
+        fade[:, i] = np.minimum(fade[:, i], f)
+        fade[:, w - 1 - i] = np.minimum(fade[:, w - 1 - i], f)
+    for j in range(margin_y):
+        f = j / margin_y
+        fade[j, :] = np.minimum(fade[j, :], f)
+        fade[h - 1 - j, :] = np.minimum(fade[h - 1 - j, :], f)
+    alpha = (alpha * fade).astype(np.uint8)
+    img.putalpha(Image.fromarray(alpha))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    out.seek(0)
+    b64 = base64.b64encode(out.read()).decode("ascii")
 
     bounds = [[float(lats.min()), float(lons.min())], [float(lats.max()), float(lons.max())]]
     return b64, bounds
