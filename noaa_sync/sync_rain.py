@@ -49,14 +49,24 @@ NOMADS_BASE = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 
 
 def find_latest_available_run(now=None):
-    """GFS publie ~4-5h après l'heure nominale du run. On recule par pas de 6h
-    (00/06/12/18Z) jusqu'à un run vieux d'au moins 5h, sans jamais vérifier
-    l'existence réelle (le téléchargement échouera proprement sinon, voir main())."""
+    """GFS commence à publier ~3h30 après l'heure nominale du run, disponibilité
+    complète ~4h40 après. On vise le dernier run théoriquement complet (recul de 4h40),
+    avec repli automatique sur le run précédent si le téléchargement échoue encore
+    (voir download_grib_with_retry) -- au cas où le calendrier réel aurait un peu de
+    retard ce jour-là."""
     now = now or datetime.now(timezone.utc)
-    candidate = now - timedelta(hours=5)
+    candidate = now - timedelta(hours=4, minutes=40)
     run_hour = (candidate.hour // 6) * 6
     run_dt = candidate.replace(hour=run_hour, minute=0, second=0, microsecond=0)
     return run_dt.strftime("%Y%m%d"), f"{run_hour:02d}"
+
+
+def previous_run(run_date, run_hour):
+    """Recule de 6h -- pour retomber sur le run précédent si celui ciblé n'est pas
+    encore publié (retard ponctuel côté NOAA)."""
+    dt = datetime.strptime(f"{run_date}{run_hour}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
+    dt -= timedelta(hours=6)
+    return dt.strftime("%Y%m%d"), f"{dt.hour:02d}"
 
 
 def build_url(run_date, run_hour, forecast_hour):
@@ -156,10 +166,22 @@ def main():
     rows = []
     for fh in FORECAST_HOURS:
         print(f"\n[+{fh}h] récupération…")
-        url = build_url(run_date, run_hour, fh)
+        this_date, this_hour = run_date, run_hour
         grib_path = f"/tmp/gfs_rain_f{fh:03d}.grib2"
+        ok = False
+        for attempt in range(2):  # run ciblé, puis repli sur le run précédent si besoin
+            url = build_url(this_date, this_hour, fh)
+            try:
+                download_grib(url, grib_path)
+                ok = True
+                break
+            except Exception as e:
+                print(f"  ! run {this_date} {this_hour}Z indisponible ({e}) — repli sur le run précédent.", file=sys.stderr)
+                this_date, this_hour = previous_run(this_date, this_hour)
+        if not ok:
+            print(f"  ! échec pour +{fh}h après 2 tentatives, abandon pour cette échéance.", file=sys.stderr)
+            continue
         try:
-            download_grib(url, grib_path)
             b64, bounds = grib_to_png_base64(grib_path)
             print(f"  OK -- image {len(b64)} caractères base64")
             if args.dry_run:
@@ -169,7 +191,7 @@ def main():
                 print(f"  (dry-run) image enregistrée : {png_path}")
             else:
                 rows.append({
-                    "forecast_hour": fh, "run_date": run_date, "run_hour": run_hour,
+                    "forecast_hour": fh, "run_date": this_date, "run_hour": this_hour,
                     "image_base64": b64, "bounds": bounds,
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 })
