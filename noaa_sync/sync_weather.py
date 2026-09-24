@@ -30,6 +30,7 @@ IMPORTANT — à vérifier avant le premier vrai run :
        02/09/2026, c'est le champ effectivement présent sur cet endpoint).
 """
 import os
+import re
 import sys
 import json
 import time
@@ -260,15 +261,50 @@ def expand_hourly(taf_row):
 # ============================================================
 # MISE EN FORME POUR SUPABASE (à ajuster à votre schéma réel si besoin)
 # ============================================================
+def parse_visibility_m(raw):
+    """Visibilité en mètres, extraite directement du texte brut -- plus précise que
+    visibility_sm (NOAA arrondit au 1/4 de mile le plus proche pour les METAR non-US,
+    ce qui fait dériver 350m en ~400m après reconversion). CAVOK -> 9999 (>10km, par
+    convention). Repli sur None si aucun groupe à 4 chiffres identifiable (cas rare,
+    formats non standards) -- le champ visibility_sm reste alors le seul disponible."""
+    if not raw:
+        return None
+    if "CAVOK" in raw:
+        return 9999
+    for tok in raw.split()[1:]:  # le 1er token est "METAR"/"SPECI" ou l'OACI, jamais la visibilité
+        if re.fullmatch(r"\d{4}", tok):
+            return int(tok)
+    return None
+
+
+def parse_rvr(raw):
+    """Portée Visuelle de Piste (RVR), ex: 'R26/1600D' -> piste 26, 1600m, tendance
+    décroissante. Peut y en avoir plusieurs (une par piste équipée). Liste vide si le
+    METAR n'en contient pas (cas normal, la plupart n'en ont pas)."""
+    if not raw:
+        return []
+    out = []
+    for m in re.finditer(r"R(\d{2}[LRC]?)/(\d{4})(?:V(\d{4}))?([DUN])?", raw):
+        out.append({
+            "runway": m.group(1), "value_m": int(m.group(2)),
+            "value_m_max": int(m.group(3)) if m.group(3) else None,
+            "trend": {"D": "décroissant", "U": "croissant", "N": "stable"}.get(m.group(4)),
+        })
+    return out
+
+
 def map_metar(m):
+    raw = m.get("rawOb")
     return {
         "icao_code": m.get("icaoId"),
-        "raw_metar": m.get("rawOb"),
+        "raw_metar": raw,
         "observation_time": m.get("obsTime") or m.get("reportTime"),
         "wind_direction": m.get("wdir") if isinstance(m.get("wdir"), int) else None,
         "wind_speed_kt": m.get("wspd"),
         "wind_gust_kt": m.get("wgst"),
         "visibility_sm": m.get("visib"),
+        "visibility_m": parse_visibility_m(raw),
+        "rvr": parse_rvr(raw) or None,
         "temperature_c": m.get("temp"),
         "dewpoint_c": m.get("dewp"),
         "qnh_hpa": round(m["altim"]) if m.get("altim") else None,
