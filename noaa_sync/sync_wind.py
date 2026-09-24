@@ -59,10 +59,14 @@ def previous_run(run_date, run_hour):
     return dt.strftime("%Y%m%d"), f"{dt.hour:02d}"
 
 
-def build_url(run_date, run_hour, forecast_hour):
+def build_url(run_date, run_hour, forecast_hour, mode):
+    if mode == "gust":
+        var_part = "&var_GUST=on&lev_surface=on"
+    else:
+        var_part = "&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on"
     return (
         f"{NOMADS_BASE}?file=gfs.t{run_hour}z.pgrb2.0p25.f{forecast_hour:03d}"
-        f"&var_UGRD=on&var_VGRD=on&lev_10_m_above_ground=on&subregion="
+        f"{var_part}&subregion="
         f"&leftlon={BBOX['leftlon']}&rightlon={BBOX['rightlon']}"
         f"&toplat={BBOX['toplat']}&bottomlat={BBOX['bottomlat']}"
         f"&dir=/gfs.{run_date}/{run_hour}/atmos"
@@ -81,10 +85,17 @@ def download_grib(url, dest_path):
         f.write(data)
 
 
-def grib_to_png_base64(grib_path):
-    """Lit le GRIB2 (via cfgrib/eccodes), calcule la vitesse du vent (magnitude des
-    composantes U/V, converties en nœuds), rend une image PNG transparente sous un
-    seuil bas avec des flèches de direction, renvoie (base64_png, bounds)."""
+def grib_to_png_base64(grib_path, mode):
+    """Lit le GRIB2 (via cfgrib/eccodes), calcule la vitesse du vent en nœuds, rend une
+    image PNG transparente sous un seuil bas avec des flèches de direction à LONGUEUR
+    FIXE (mode 'mean' seulement -- 'gust' n'a pas de composantes U/V, juste une
+    magnitude, donc pas de flèche possible), renvoie (base64_png, bounds).
+
+    Flèches à longueur fixe : la vitesse est déjà portée par la couleur de fond -- des
+    flèches dont la longueur grandit AUSSI avec la vitesse se chevauchent et forment des
+    "pâtés" illisibles dans les zones de vent fort (repéré en usage réel). En normalisant
+    chaque vecteur à une longueur de 1 avant de le tracer, elles restent toujours nettes
+    et régulièrement espacées, quelle que soit l'intensité du vent."""
     import xarray as xr
     import numpy as np
     import matplotlib
@@ -92,17 +103,24 @@ def grib_to_png_base64(grib_path):
     import matplotlib.pyplot as plt
     from PIL import Image
 
-    # U et V à 10m sont dans le même fichier -- cfgrib les sépare en 2 datasets distincts
-    # via filter_by_keys plutôt que de les mélanger dans un seul open_dataset (plus fiable
-    # sur ce type de fichier GFS que de laisser cfgrib deviner tout seul).
-    ds_u = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "10u"}})
-    ds_v = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "10v"}})
-    u = ds_u[list(ds_u.data_vars)[0]].values
-    v = ds_v[list(ds_v.data_vars)[0]].values
-    lats = ds_u.latitude.values
-    lons = ds_u.longitude.values
+    if mode == "gust":
+        ds = xr.open_dataset(grib_path, engine="cfgrib")
+        speed_ms = ds[list(ds.data_vars)[0]].values
+        lats = ds.latitude.values
+        lons = ds.longitude.values
+        u = v = None
+    else:
+        # U et V à 10m sont dans le même fichier -- cfgrib les sépare en 2 datasets
+        # distincts via filter_by_keys plutôt que de les mélanger dans un seul
+        # open_dataset (plus fiable sur ce type de fichier GFS).
+        ds_u = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "10u"}})
+        ds_v = xr.open_dataset(grib_path, engine="cfgrib", backend_kwargs={"filter_by_keys": {"shortName": "10v"}})
+        u = ds_u[list(ds_u.data_vars)[0]].values
+        v = ds_v[list(ds_v.data_vars)[0]].values
+        lats = ds_u.latitude.values
+        lons = ds_u.longitude.values
+        speed_ms = np.sqrt(u ** 2 + v ** 2)
 
-    speed_ms = np.sqrt(u ** 2 + v ** 2)
     speed_kt = speed_ms * 1.94384  # m/s -> nœuds, convention aéronautique
 
     # Palette par PALIERS (bandes nettes, pas un dégradé continu) -- façon carte
@@ -110,6 +128,9 @@ def grib_to_png_base64(grib_path):
     # jaune -> orange -> rouge tous les ~10kt. Modifiable ici si besoin (LEVELS_KT).
     LEVELS_KT = [0, 10, 20, 30, 40, 50, 60, 200]  # 8 bornes -> 7 intervalles, 7 couleurs
     COLORS = ["#ffffff00", "#a7d8f0", "#5fb8e0", "#2fbf71", "#e8d33c", "#e8a13c", "#e0483e"]
+    if mode == "gust":
+        # Rafales : dégradé orangé/rouge distinct du vent moyen, pour ne jamais les confondre.
+        COLORS = ["#ffffff00", "#fde68a", "#f6c453", "#f59e0b", "#ea580c", "#dc2626", "#8b0000"]
 
     fig = plt.figure(figsize=(speed_kt.shape[1] / 100, speed_kt.shape[0] / 100), dpi=400)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -120,14 +141,17 @@ def grib_to_png_base64(grib_path):
     lon2d, lat2d = np.meshgrid(lons, lats)
     ax.contourf(lon2d, lat2d, speed_kt, levels=LEVELS_KT, colors=COLORS)
 
-    # Flèches de direction -- nettes, sans liseré blanc (contour trop "flou" à l'usage) --
-    # juste un trait noir plein et fin, comme la carte de référence.
-    step = 16
-    ax.quiver(
-        lon2d[::step, ::step], lat2d[::step, ::step],
-        u[::step, ::step], v[::step, ::step],
-        color="#111111", scale=280, width=0.0032, headwidth=4, headlength=4.5, alpha=1.0,
-    )
+    if mode != "gust":
+        step = 16
+        u_s, v_s, speed_s = u[::step, ::step], v[::step, ::step], speed_ms[::step, ::step]
+        safe_speed = np.where(speed_s < 0.5, 1, speed_s)  # évite une division par ~0 sur les zones de calme plat
+        u_unit, v_unit = u_s / safe_speed, v_s / safe_speed
+        u_unit[speed_s < 0.5] = 0  # pas de flèche là où il n'y a quasiment pas de vent
+        v_unit[speed_s < 0.5] = 0
+        ax.quiver(
+            lon2d[::step, ::step], lat2d[::step, ::step], u_unit, v_unit,
+            color="#111111", scale=22, width=0.006, headwidth=3.5, headlength=4, alpha=1.0,
+        )
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", transparent=True)
@@ -192,42 +216,44 @@ def main():
     print(f"Run GFS ciblé : {run_date} {run_hour}Z")
 
     rows = []
-    for fh in FORECAST_HOURS:
-        print(f"\n[+{fh}h] récupération…")
-        this_date, this_hour = run_date, run_hour
-        grib_path = f"/tmp/gfs_wind_f{fh:03d}.grib2"
-        ok = False
-        for attempt in range(2):  # run ciblé, puis repli sur le run précédent si besoin
-            url = build_url(this_date, this_hour, fh)
+    for mode in ("mean", "gust"):
+        print(f"\n=== Mode : {'Vent moyen (UGRD/VGRD 10m)' if mode == 'mean' else 'Rafales (GUST surface)'} ===")
+        for fh in FORECAST_HOURS:
+            print(f"[+{fh}h] récupération…")
+            this_date, this_hour = run_date, run_hour
+            grib_path = f"/tmp/gfs_wind_{mode}_f{fh:03d}.grib2"
+            ok = False
+            for attempt in range(2):  # run ciblé, puis repli sur le run précédent si besoin
+                url = build_url(this_date, this_hour, fh, mode)
+                try:
+                    download_grib(url, grib_path)
+                    ok = True
+                    break
+                except Exception as e:
+                    print(f"  ! run {this_date} {this_hour}Z indisponible ({e}) — repli sur le run précédent.", file=sys.stderr)
+                    this_date, this_hour = previous_run(this_date, this_hour)
+            if not ok:
+                print(f"  ! échec pour +{fh}h après 2 tentatives, abandon pour cette échéance.", file=sys.stderr)
+                continue
             try:
-                download_grib(url, grib_path)
-                ok = True
-                break
+                b64, bounds = grib_to_png_base64(grib_path, mode)
+                print(f"  OK -- image {len(b64)} caractères base64")
+                if args.dry_run:
+                    png_path = f"/tmp/gfs_wind_{mode}_f{fh:03d}.png"
+                    with open(png_path, "wb") as f:
+                        f.write(base64.b64decode(b64))
+                    print(f"  (dry-run) image enregistrée : {png_path}")
+                else:
+                    rows.append({
+                        "forecast_hour": fh, "layer_type": mode, "run_date": this_date, "run_hour": this_hour,
+                        "image_base64": b64, "bounds": bounds,
+                        "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    })
             except Exception as e:
-                print(f"  ! run {this_date} {this_hour}Z indisponible ({e}) — repli sur le run précédent.", file=sys.stderr)
-                this_date, this_hour = previous_run(this_date, this_hour)
-        if not ok:
-            print(f"  ! échec pour +{fh}h après 2 tentatives, abandon pour cette échéance.", file=sys.stderr)
-            continue
-        try:
-            b64, bounds = grib_to_png_base64(grib_path)
-            print(f"  OK -- image {len(b64)} caractères base64")
-            if args.dry_run:
-                png_path = f"/tmp/gfs_wind_f{fh:03d}.png"
-                with open(png_path, "wb") as f:
-                    f.write(base64.b64decode(b64))
-                print(f"  (dry-run) image enregistrée : {png_path}")
-            else:
-                rows.append({
-                    "forecast_hour": fh, "run_date": this_date, "run_hour": this_hour,
-                    "image_base64": b64, "bounds": bounds,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(),
-                })
-        except Exception as e:
-            print(f"  ! échec pour +{fh}h : {e}", file=sys.stderr)
+                print(f"  ! échec pour +{fh}h : {e}", file=sys.stderr)
 
     if rows and not args.dry_run:
-        supabase_upsert("wind_forecast_layers", rows, on_conflict="forecast_hour")
+        supabase_upsert("wind_forecast_layers", rows, on_conflict="forecast_hour,layer_type")
 
     print("\nTerminé.")
 
