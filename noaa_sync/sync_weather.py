@@ -261,6 +261,22 @@ def expand_hourly(taf_row):
 # ============================================================
 # MISE EN FORME POUR SUPABASE (à ajuster à votre schéma réel si besoin)
 # ============================================================
+def parse_vertical_visibility(raw):
+    """Groupe VV du METAR (visibilité verticale, utilisé quand le ciel est obscurci sans
+    plafond de nuages classique mesurable). 'VV002' -> 200ft (traité comme un plafond
+    normal pour comparaison aux minima). 'VV///' -> AUCUNE valeur mesurable : c'est le cas
+    le plus sévère, qui doit exclure automatiquement le terrain comme dégagement quel que
+    soit le seuil configuré (voir note interne HOP du 14/02/2025, gestion des ALTN)."""
+    if not raw:
+        return None, False
+    if re.search(r"\bVV///(?:\s|$)", raw):
+        return None, True
+    m = re.search(r"\bVV(\d{3})\b", raw)
+    if m:
+        return int(m.group(1)) * 100, False
+    return None, False
+
+
 def parse_visibility_m(raw):
     """Visibilité en mètres, extraite directement du texte brut -- plus précise que
     visibility_sm (NOAA arrondit au 1/4 de mile le plus proche pour les METAR non-US,
@@ -295,6 +311,7 @@ def parse_rvr(raw):
 
 def map_metar(m):
     raw = m.get("rawOb")
+    vv_ft, vv_unmeasurable = parse_vertical_visibility(raw)
     return {
         "icao_code": m.get("icaoId"),
         "raw_metar": raw,
@@ -305,6 +322,8 @@ def map_metar(m):
         "visibility_sm": m.get("visib"),
         "visibility_m": parse_visibility_m(raw),
         "rvr": parse_rvr(raw) or None,
+        "vertical_visibility_ft": vv_ft,
+        "vertical_visibility_unmeasurable": vv_unmeasurable,
         "temperature_c": m.get("temp"),
         "dewpoint_c": m.get("dewp"),
         "qnh_hpa": round(m["altim"]) if m.get("altim") else None,
