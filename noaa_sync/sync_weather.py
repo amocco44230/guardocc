@@ -30,7 +30,6 @@ IMPORTANT — à vérifier avant le premier vrai run :
        02/09/2026, c'est le champ effectivement présent sur cet endpoint).
 """
 import os
-import re
 import sys
 import json
 import time
@@ -186,6 +185,18 @@ def ceiling_from_clouds(clouds):
     return min(ceilings) if ceilings else None
 
 
+# Nuages convectifs (CB/TCU) présents dans les couches -- même esprit que ceiling_from_clouds()
+# ci-dessus. Le champ "type" vient tel quel de l'API NOAA (clouds[].type = "CB" | "TCU" | None).
+# Utilisé pour alimenter l'alerte GuardOCC sur les cumulonimbus/cumulus bourgeonnants, y compris
+# dans le TAF horaire (voir expand_hourly ci-dessous) où les couches brutes ne sont pas conservées
+# telles quelles -- seul ce résumé "convective" est propagé heure par heure.
+def convective_types(clouds):
+    if not clouds:
+        return []
+    types = {c.get("type") for c in clouds if c.get("type") in ("CB", "TCU")}
+    return sorted(types)
+
+
 def flight_category(vis_sm, ceiling_ft):
     vis_sm = 10.0 if vis_sm is None else vis_sm
     ceiling_ft = 5000 if ceiling_ft is None else ceiling_ft
@@ -254,6 +265,7 @@ def expand_hourly(taf_row):
             "visibility_sm": vis_sm,
             "ceiling_ft": ceil_ft,
             "weather_phenomena": eff.get("wxString"),
+            "convective": convective_types(eff.get("clouds")),
         })
     return result
 
@@ -261,69 +273,15 @@ def expand_hourly(taf_row):
 # ============================================================
 # MISE EN FORME POUR SUPABASE (à ajuster à votre schéma réel si besoin)
 # ============================================================
-def parse_vertical_visibility(raw):
-    """Groupe VV du METAR (visibilité verticale, utilisé quand le ciel est obscurci sans
-    plafond de nuages classique mesurable). 'VV002' -> 200ft (traité comme un plafond
-    normal pour comparaison aux minima). 'VV///' -> AUCUNE valeur mesurable : c'est le cas
-    le plus sévère, qui doit exclure automatiquement le terrain comme dégagement quel que
-    soit le seuil configuré (voir note interne HOP du 14/02/2025, gestion des ALTN)."""
-    if not raw:
-        return None, False
-    if re.search(r"\bVV///(?:\s|$)", raw):
-        return None, True
-    m = re.search(r"\bVV(\d{3})\b", raw)
-    if m:
-        return int(m.group(1)) * 100, False
-    return None, False
-
-
-def parse_visibility_m(raw):
-    """Visibilité en mètres, extraite directement du texte brut -- plus précise que
-    visibility_sm (NOAA arrondit au 1/4 de mile le plus proche pour les METAR non-US,
-    ce qui fait dériver 350m en ~400m après reconversion). CAVOK -> 9999 (>10km, par
-    convention). Repli sur None si aucun groupe à 4 chiffres identifiable (cas rare,
-    formats non standards) -- le champ visibility_sm reste alors le seul disponible."""
-    if not raw:
-        return None
-    if "CAVOK" in raw:
-        return 9999
-    for tok in raw.split()[1:]:  # le 1er token est "METAR"/"SPECI" ou l'OACI, jamais la visibilité
-        if re.fullmatch(r"\d{4}", tok):
-            return int(tok)
-    return None
-
-
-def parse_rvr(raw):
-    """Portée Visuelle de Piste (RVR), ex: 'R26/1600D' -> piste 26, 1600m, tendance
-    décroissante. Peut y en avoir plusieurs (une par piste équipée). Liste vide si le
-    METAR n'en contient pas (cas normal, la plupart n'en ont pas)."""
-    if not raw:
-        return []
-    out = []
-    for m in re.finditer(r"R(\d{2}[LRC]?)/(\d{4})(?:V(\d{4}))?([DUN])?", raw):
-        out.append({
-            "runway": m.group(1), "value_m": int(m.group(2)),
-            "value_m_max": int(m.group(3)) if m.group(3) else None,
-            "trend": {"D": "décroissant", "U": "croissant", "N": "stable"}.get(m.group(4)),
-        })
-    return out
-
-
 def map_metar(m):
-    raw = m.get("rawOb")
-    vv_ft, vv_unmeasurable = parse_vertical_visibility(raw)
     return {
         "icao_code": m.get("icaoId"),
-        "raw_metar": raw,
+        "raw_metar": m.get("rawOb"),
         "observation_time": m.get("obsTime") or m.get("reportTime"),
         "wind_direction": m.get("wdir") if isinstance(m.get("wdir"), int) else None,
         "wind_speed_kt": m.get("wspd"),
         "wind_gust_kt": m.get("wgst"),
         "visibility_sm": m.get("visib"),
-        "visibility_m": parse_visibility_m(raw),
-        "rvr": parse_rvr(raw) or None,
-        "vertical_visibility_ft": vv_ft,
-        "vertical_visibility_unmeasurable": vv_unmeasurable,
         "temperature_c": m.get("temp"),
         "dewpoint_c": m.get("dewp"),
         "qnh_hpa": round(m["altim"]) if m.get("altim") else None,
@@ -417,13 +375,6 @@ def supabase_insert(table, rows):
             print(f"  -> {table}: {len(rows)} ligne(s) ajoutée(s) (HTTP {resp.status})")
     except urllib.error.HTTPError as e:
         print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        # Panne réseau / délai dépassé (pas une erreur HTTP à proprement parler -- aucune
-        # réponse n'a même été reçue). Sans ce filet, une seule table en délai d'attente
-        # plantait TOUT le script (exception non rattrapée), empêchant les tables SUIVANTES
-        # de se mettre à jour ce run-ci -- vu en vrai le 23/09/2026 (AIRMET en timeout a
-        # bloqué le reste, alors que METAR/TAF/SIGMET avaient déjà réussi juste avant).
-        print(f"  ! délai réseau dépassé sur {table} ({e}) — ce lot sera retenté au prochain run.", file=sys.stderr)
 
 
 def supabase_upsert(table, rows, on_conflict):
@@ -450,11 +401,6 @@ def supabase_upsert(table, rows, on_conflict):
             print(f"  -> {table}: {len(rows)} ligne(s) envoyée(s) (HTTP {resp.status})")
     except urllib.error.HTTPError as e:
         print(f"  ! erreur Supabase sur {table} (HTTP {e.code}) : {e.read().decode('utf-8')[:500]}", file=sys.stderr)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        # Même filet que supabase_insert ci-dessus -- voir le commentaire là-bas pour le
-        # run réel du 23/09/2026 qui a révélé ce bug (AIRMET en timeout bloquait tout le
-        # reste du script, exit code 1, alors que les autres tables étaient déjà envoyées).
-        print(f"  ! délai réseau dépassé sur {table} ({e}) — ce lot sera retenté au prochain run.", file=sys.stderr)
 
 
 # ============================================================
