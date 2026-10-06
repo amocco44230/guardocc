@@ -16,11 +16,24 @@
 # cron-job.org, ou manuellement via le bouton "Run workflow" dans l'onglet
 # Actions. La fenêtre horaire 04h-23h est donc gérée côté cron-job.org.
 #
+# concurrency : même raison que sync-weather.yml -- évite le chevauchement de
+# deux runs et les annulations/emails "All jobs were cancelled" quand un
+# déclenchement arrive pendant qu'un run précédent est encore en file
+# d'attente côté GitHub. cancel-in-progress à false : le nouveau run attend
+# en file, aucun run n'est jamais tué en cours de route. Important ici en
+# particulier car fleet_track_history est un INSERT cumulatif (historique de
+# trajectoire) -- un run interrompu à mi-chemin (cancel-in-progress: true)
+# pourrait couper l'envoi en plein milieu, alors qu'une simple mise en file
+# ne perd jamais rien, juste un léger décalage.
+#
 # Mêmes secrets que sync-weather.yml (déjà configurés si ce dernier existe) :
 #   SUPABASE_URL, SUPABASE_SERVICE_KEY
 name: Sync flotte OpenSky -> Supabase
 on:
   workflow_dispatch: {}         # déclenché par cron-job.org (04h-23h UTC), ou manuellement dans l'onglet Actions
+concurrency:
+  group: sync-fleet
+  cancel-in-progress: false
 jobs:
   sync:
     runs-on: ubuntu-latest
