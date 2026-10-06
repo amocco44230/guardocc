@@ -10,6 +10,17 @@
 # appel externe workflow_dispatch depuis cron-job.org, ou manuellement
 # via le bouton "Run workflow" dans l'onglet Actions.
 #
+# concurrency : évite que deux runs se chevauchent quand un déclenchement
+# cron-job.org arrive alors qu'un run précédent est encore en file d'attente
+# côté GitHub (runners publics parfois surchargés) -- sans ce bloc, GitHub
+# annule alors tout seul l'ancien run encore en attente ("All jobs were
+# cancelled" par email), ce qui n'est pas grave en soi (sync_weather.py fait
+# un upsert de l'état météo ACTUEL à chaque passage, rien n'est cumulatif,
+# donc rien n'est perdu) mais génère des alertes inutiles. cancel-in-progress
+# à false : le nouveau run attend sagement en file, aucun run n'est jamais
+# tué en cours d'exécution (ce qui, lui, pourrait interrompre un envoi
+# Supabase à mi-chemin -- cancel-in-progress: true serait à éviter ici).
+#
 # Nécessite deux secrets de dépôt :
 #   Settings -> Secrets and variables -> Actions -> New repository secret
 #     SUPABASE_URL          = https://xxxx.supabase.co
@@ -17,6 +28,9 @@
 name: Sync météo NOAA -> Supabase
 on:
   workflow_dispatch: {}       # déclenché par cron-job.org toutes les 5 min, ou manuellement dans l'onglet Actions
+concurrency:
+  group: sync-weather
+  cancel-in-progress: false
 jobs:
   sync:
     runs-on: ubuntu-latest
